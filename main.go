@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -13,17 +14,19 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"golang.org/x/crypto/ssh/terminal"
 )
 
 import "C"
 
-
 const workerCount = 40
 
 var systemNames = map[string]bool{
-	".": true,
-	"..": true,
+	".":         true,
+	"..":        true,
 	".DS_Store": true,
 }
 
@@ -33,16 +36,16 @@ type FileData struct {
 }
 
 //export Encrypt
-func Encrypt(path *C.char, password *C.char)  {
-	run(true,  C.GoString(path), C.GoString(password))
+func Encrypt(path *C.char, password *C.char) {
+	run(true, C.GoString(path), C.GoString(password))
 }
 
 //export Decrypt
-func Decrypt(path *C.char, password *C.char)  {
+func Decrypt(path *C.char, password *C.char) {
 	run(false, C.GoString(path), C.GoString(password))
 }
 
-func run(isCrypt  bool, path string, password string) {
+func run(isCrypt bool, path string, password string) {
 	pswd := sha256.Sum256([]byte(password))
 	pathChan := make(chan string, 100)
 
@@ -101,19 +104,15 @@ func cryptWorker(pathChan <-chan string, password []byte) {
 		// шифрование имени  файла
 
 		// запись нового содержимого по новому пути
-		if err := ioutil.WriteFile(fileData.Path + "/" + fileData.Name, cipherText, 0777); err != nil {
+		if err := ioutil.WriteFile(fileData.Path+"/"+fileData.Name, cipherText, 0777); err != nil {
 			log.Printf("write encrypted file %s error %s", path, err)
 			continue
 		}
-
-		os.Remove(path)
 	}
 }
 
 func decryptWorker(pathChan <-chan string, password []byte) {
 	for path := range pathChan {
-		fmt.Println("decrypt",path)
-
 		// чтение файла
 		fileData, err := getImageData(path)
 
@@ -140,12 +139,10 @@ func decryptWorker(pathChan <-chan string, password []byte) {
 		// расшифровка имени  файла
 
 		// запись нового содержимого по новому пути
-		if err := ioutil.WriteFile(fileData.Path + "/" + fileData.Name, decryptedText, 0777); err != nil {
+		if err := ioutil.WriteFile(fileData.Path+"/"+fileData.Name, decryptedText, 0777); err != nil {
 			log.Printf("write decrypted file %s error %s", path, err)
 			continue
 		}
-
-		os.Remove(path)
 	}
 }
 
@@ -155,10 +152,10 @@ func readDir(path string, pathChan chan string, wg *sync.WaitGroup) {
 		path += "/"
 	}
 
-	files, err :=  ioutil.ReadDir(path)
+	files, err := ioutil.ReadDir(path)
 
 	if err != nil {
-		log.Println("read dir err:",err)
+		log.Println("read dir err:", err)
 		return
 	}
 	for _, file := range files {
@@ -172,10 +169,10 @@ func readDir(path string, pathChan chan string, wg *sync.WaitGroup) {
 			continue
 		}
 
-		go readDir(path + fileName, pathChan, wg)
+		go readDir(path+fileName, pathChan, wg)
 	}
 
-	time.Sleep(100 * time.Millisecond)	// time for run goroutine and make wg.Add
+	time.Sleep(100 * time.Millisecond) // time for run goroutine and make wg.Add
 	wg.Done()
 }
 
@@ -192,7 +189,6 @@ func getImageData(path string) (FileData, error) {
 	fileName := pathChunks[len(pathChunks)-1]
 	fileData.Name = fileName
 	fileData.Path = strings.ReplaceAll(path, fileName, "")
-
 
 	return fileData, nil
 }
@@ -237,5 +233,40 @@ func decrypt(cipherText []byte, key []byte) ([]byte, error) {
 }
 
 func main() {
+	// CLI
+	dirPath := ""
+	mode := ""
 
+	flag.StringVar(&dirPath, "d", "", "path for directory")
+	flag.StringVar(&mode, "m", "", "mode: encrypt or decrypt")
+	flag.Parse()
+
+	if dirPath == "" || mode == "" {
+		fmt.Println("all flags are required")
+		return
+	}
+	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+		fmt.Printf("directory %s is not exist", dirPath)
+		return
+	}
+	if mode != "encrypt" && mode != "decrypt" {
+		fmt.Printf("mode %s is wrong. Use 'encrypt' or 'decrypt' values", mode)
+		return
+	}
+
+	fmt.Print("Enter Password: ")
+	bytePassword, err := terminal.ReadPassword(syscall.Stdin)
+
+	if err != nil || len(bytePassword) == 0 {
+		fmt.Println("password is required")
+	}
+	if mode == "encrypt" {
+		fmt.Println("\nencrypting", dirPath)
+		Encrypt(C.CString(dirPath), C.CString(string(bytePassword)))
+	} else {
+		fmt.Println("\ndecrypting", dirPath)
+		Decrypt(C.CString(dirPath), C.CString(string(bytePassword)))
+	}
+
+	fmt.Println("done")
 }
